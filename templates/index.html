@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Chat Vidéo et Textuel Aléatoire</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f1f1f1; }
+        #chat { width: 80%; margin: 0 auto; max-width: 600px; text-align: center; }
+        #videos { display: flex; justify-content: space-around; margin-bottom: 10px; }
+        video { width: 45%; height: auto; background-color: #000; }
+        #messages { height: 150px; border: 1px solid #ccc; padding: 10px; overflow-y: scroll; background-color: #fff; margin-bottom: 10px; text-align: left; }
+        #user-input { display: flex; }
+        #user-input input { flex: 1; padding: 10px; }
+        #user-input button { padding: 10px; }
+        #status { margin-bottom: 10px; }
+        #new-chat { display: none; }
+    </style>
+</head>
+<body>
+    <div id="chat">
+        <h2>Chat Vidéo et Textuel Aléatoire</h2>
+        <div id="status">Recherche d'un partenaire...</div>
+        <div id="videos">
+            <video id="localVideo" autoplay muted></video>
+            <video id="remoteVideo" autoplay></video>
+        </div>
+        <div id="messages"></div>
+        <div id="user-input" style="display: none;">
+            <input id="message" type="text" placeholder="Votre message..." autocomplete="off">
+            <button id="send">Envoyer</button>
+        </div>
+        <button id="new-chat">Nouvelle Conversation</button>
+    </div>
+    <!-- Utiliser Socket.IO version 3.x pour la compatibilité -->
+    <script src="https://cdn.socket.io/3.1.3/socket.io.min.js"></script>
+    <script>
+        var socket = io();
+
+        var configuration = {
+            'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }]
+        };
+        var localVideo = document.getElementById('localVideo');
+        var remoteVideo = document.getElementById('remoteVideo');
+        var messages = document.getElementById('messages');
+        var messageInput = document.getElementById('message');
+        var sendButton = document.getElementById('send');
+        var userInput = document.getElementById('user-input');
+        var status = document.getElementById('status');
+        var newChatButton = document.getElementById('new-chat');
+        var peerConnection;
+        var localStream;
+
+        socket.on('connect', function() {
+            socket.emit('find_partner');
+        });
+
+        socket.on('partner_found', function() {
+            status.innerText = "Partenaire trouvé ! Connexion en cours...";
+            startPeerConnection();
+            userInput.style.display = 'flex';
+        });
+
+        socket.on('partner_left', function() {
+            status.innerText = "Votre partenaire a quitté la conversation.";
+            endPeerConnection();
+            userInput.style.display = 'none';
+            newChatButton.style.display = 'block';
+        });
+
+        socket.on('signal', function(data) {
+            if (data.type === 'offer') {
+                peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+                peerConnection.createAnswer().then(function(answer) {
+                    peerConnection.setLocalDescription(answer);
+                    socket.emit('signal', answer);
+                });
+            } else if (data.type === 'answer') {
+                peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+            } else if (data.type === 'candidate') {
+                var candidate = new RTCIceCandidate(data.candidate);
+                peerConnection.addIceCandidate(candidate);
+            }
+        });
+
+        socket.on('text_message', function(data) {
+            var msg = document.createElement('div');
+            msg.innerText = "Partenaire : " + data;
+            messages.appendChild(msg);
+            messages.scrollTop = messages.scrollHeight;
+        });
+
+        function startPeerConnection() {
+            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+            .then(function(stream) {
+                localStream = stream;
+                localVideo.srcObject = stream;
+
+                peerConnection = new RTCPeerConnection(configuration);
+
+                // Pour les navigateurs récents
+                localStream.getTracks().forEach(function(track) {
+                    peerConnection.addTrack(track, localStream);
+                });
+
+                peerConnection.ontrack = function(event) {
+                    remoteVideo.srcObject = event.streams[0];
+                };
+
+                peerConnection.onicecandidate = function(event) {
+                    if (event.candidate) {
+                        socket.emit('signal', { type: 'candidate', candidate: event.candidate });
+                    }
+                };
+
+                peerConnection.createOffer().then(function(offer) {
+                    return peerConnection.setLocalDescription(offer);
+                })
+                .then(function() {
+                    socket.emit('signal', peerConnection.localDescription);
+                });
+
+                status.innerText = "En conversation.";
+            })
+            .catch(function(err) {
+                console.error('Erreur lors de l\'accès à la caméra/microphone', err);
+                status.innerText = "Impossible d'accéder à la caméra/microphone.";
+            });
+        }
+
+        function endPeerConnection() {
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+                localVideo.srcObject = null;
+                remoteVideo.srcObject = null;
+            }
+            messages.innerHTML = '';
+        }
+
+        sendButton.onclick = function() {
+            var msg = messageInput.value;
+            if (msg.trim() !== '') {
+                socket.emit('text_message', msg);
+                var myMsg = document.createElement('div');
+                myMsg.innerText = "Vous : " + msg;
+                messages.appendChild(myMsg);
+                messages.scrollTop = messages.scrollHeight;
+                messageInput.value = '';
+            }
+        };
+
+        newChatButton.onclick = function() {
+            endPeerConnection();
+            status.innerText = "Recherche d'un partenaire...";
+            newChatButton.style.display = 'none';
+            socket.emit('find_partner');
+        };
+    </script>
+</body>
+</html>
